@@ -5,6 +5,7 @@ from collections import Iterable
 from django.http import HttpResponse
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
+from django.forms import BaseForm
 
 DEFAULT_DEBUG = getattr(settings, 'JSONRESPONSE_DEFAULT_DEBUG', False)
 CALLBACK_NAME = getattr(settings, 'JSONRESPONSE_CALLBACK_NAME', 'callback')
@@ -220,6 +221,48 @@ class to_json(object):
     >>> print resp.content # doctest: +NORMALIZE_WHITESPACE
     {"data": {"data": "ok"}, "err": 0}
 
+
+    >>> from django import forms
+    >>> class User(forms.Form):
+    ...     email = forms.EmailField(required=True)
+    
+    >>> @to_json('api')
+    ... def formy(request):
+    ...    form = User({'email': 'foobar'})
+    ...    form.is_valid()
+    ...    return form
+
+    >>> resp = formy(requests.get('formy', { 'debug': 1 }))
+    >>> print resp.status_code
+    412
+    >>> print resp.content # doctest: +NORMALIZE_WHITESPACE
+    {
+        "errors": {
+            "email": [
+                "Enter a valid email address."
+            ]
+        }, 
+        "err": 1
+    }
+
+    >>> @to_json('api')
+    ... def formy(request):
+    ...    form = User({'email': 'foo@bar.com'})
+    ...    form.is_valid()
+    ...    return form
+
+    >>> resp = formy(requests.get('formy', { 'debug': 1 }))
+    >>> print resp.status_code
+    200
+    >>> print resp.content # doctest: +NORMALIZE_WHITESPACE
+    {
+        "data": {
+            "email": "foo@bar.com"
+        }, 
+        "err": 0
+    }
+
+
     """
     def __init__(self, serializer_type):
         """
@@ -268,6 +311,18 @@ class to_json(object):
                 obj = None
         
         return { "err": 0, "data": obj }
+
+    def form_to_response(self, req, form):
+        if form.is_valid():
+            return {
+                "err": 0,
+                "data": form.cleaned_data.copy()
+                }
+        else:
+            return {
+                "err": 1,
+                "errors": form.errors.copy()
+                }
 
     def err_to_response(self, err):
         if hasattr(err, "__module__"):
@@ -322,9 +377,13 @@ class to_json(object):
             resp = f(*args, **kwargs)
             if isinstance(resp, HttpResponse):
                 return resp
+            elif isinstance(resp, BaseForm):
+                status = 200 if resp.is_valid() else 412
+                data = self.form_to_response(req, resp)
+            else:
+                status = 200
+                data = self.obj_to_response(req, resp)
 
-            data = self.obj_to_response(req, resp)
-            status = 200
         except Exception as e:
             if int(req.GET.get('raise', 0)):
                 raise
